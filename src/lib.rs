@@ -11,6 +11,13 @@ const WEEK: u64 = 7 * 24 * 60 * 60; // Number of seconds in a week
 const STAKE_AMOUNT: u128 = 100_000_000_000_000_000_000; // Default 100 PUBLIC
 const NANOSECONDS: u64 = 1_000_000_000; // Nanoseconds to seconds
 
+#[near(serializers = [json, borsh])]
+pub struct UserStakeInfo {
+    staked: bool,    // Whether the stake conditions are met
+    amount: u128,    // The principal amount staked by the user
+    start_time: u64, // Timestamp when staking began
+}
+
 /// Struct for storing staking information
 #[near(serializers = [json, borsh])]
 pub struct StakeInfo {
@@ -234,12 +241,18 @@ impl StakingContract {
     }
 
     /// User staked or not.
-    pub fn user_staked(&self, account_id: AccountId) -> bool {
+    pub fn user_staked(&self, account_id: AccountId) -> UserStakeInfo {
+        let mut user_stake_info = UserStakeInfo {
+            staked: false,
+            amount: 0,
+            start_time: 0,
+        };
         if let Some(stake_info) = self.staked_balances.get(&account_id) {
-            stake_info.amount >= self.stake_amount
-        } else {
-            false
+            user_stake_info.staked = stake_info.amount >= self.stake_amount;
+            user_stake_info.amount = stake_info.amount;
+            user_stake_info.start_time = stake_info.start_time;
         }
+        user_stake_info
     }
 }
 
