@@ -124,7 +124,7 @@ impl StakingContract {
 
     /// Unstake all principal
     #[payable]
-    pub fn unstake(&mut self) -> Promise {
+    pub fn unstake(&mut self) -> u128 {
         assert_one_yocto();
         let account_id = env::predecessor_account_id();
         let stake_info = self
@@ -179,7 +179,8 @@ impl StakingContract {
                         stake_info.amount,
                         stake_info.start_time,
                     ),
-            )
+            );
+        total_payout
     }
 
     /// Callback: After ft_transfer, only then remove staking record.
