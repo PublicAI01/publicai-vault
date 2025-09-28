@@ -294,18 +294,18 @@ impl StakingContract {
     /// Ban user,slash user (only callable by the ban id account).
     /// - `account_id`: User account
     #[payable]
-    pub fn slash(&mut self, account_id: AccountId) {
+    pub fn slash(&mut self, account_id: AccountId) -> bool {
         assert_one_yocto();
         assert_eq!(
             self.ban_id,
             env::predecessor_account_id(),
             "Only the ban account can ban user."
         );
-        let mut stake_info = self
-            .staked_balances
-            .get(&account_id)
-            .expect("No stake found for this account");
-        let stake_amount = stake_info.amount;
+        let stake_info = self.staked_balances.get(&account_id);
+        if stake_info.is_none() {
+            return false;
+        }
+        let stake_amount = stake_info.unwrap().amount;
         self.total_banned_amount += stake_amount;
         self.total_banned_user += 1;
         self.total_staked -= stake_amount;
@@ -313,6 +313,7 @@ impl StakingContract {
         // Remove staking record
         self.staked_balances.remove(&account_id);
         env::log_str(&format!("Account {} slashed", account_id));
+        true
     }
 
     /// Query total banned amount
