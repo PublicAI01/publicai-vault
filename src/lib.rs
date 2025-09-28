@@ -44,13 +44,16 @@ pub struct StakingContract {
     stake_paused: bool,                                       // Pause stake
     total_staked: u128,                                       // Total amount staked
     total_user: u64,                                          // Total number of staking users
+    ban_id: AccountId,                                        // Account used to ban and unban
+    total_banned_amount: u128,                                // Total amount of banned.
+    total_banned_user: u64,                                   // Total number of banned users
 }
 
 #[near]
 impl StakingContract {
     /// Initialize the contract
     #[init]
-    pub fn new(owner_id: AccountId, token_contract: AccountId) -> Self {
+    pub fn new(owner_id: AccountId, token_contract: AccountId, ban_id: AccountId) -> Self {
         assert!(!env::state_exists(), "Already initialized");
         Self {
             owner_id,
@@ -58,10 +61,13 @@ impl StakingContract {
             staked_balances: UnorderedMap::new(b"s".to_vec()),
             user_states: UnorderedMap::new(b"user_states".to_vec()),
             stake_paused: false,
-            lock_duration: 2 * WEEK, // Lock 2 weeks on default
+            lock_duration: 4 * WEEK, // Lock 4 weeks on default,28 days
             stake_amount: STAKE_AMOUNT,
             total_staked: 0,
             total_user: 0,
+            ban_id,
+            total_banned_amount: 0,
+            total_banned_user: 0,
         }
     }
 
@@ -131,7 +137,6 @@ impl StakingContract {
             .staked_balances
             .get(&account_id)
             .expect("No stake found for this account");
-
         match self.user_states.get(&account_id) {
             Some(UserOperationState::Idle) | None => {
                 // pass
@@ -269,6 +274,55 @@ impl StakingContract {
             .take(l as usize)
             .collect()
     }
+
+    #[payable]
+    pub fn update_ban_id(&mut self, new_ban_id: AccountId) -> bool {
+        assert_one_yocto();
+        require!(
+            env::predecessor_account_id() == self.owner_id,
+            "Owner's method"
+        );
+        require!(
+            !new_ban_id.as_str().is_empty(),
+            "New ban id cannot be empty"
+        );
+        log!("Ban id updated from {} to {}", self.ban_id, new_ban_id);
+        self.ban_id = new_ban_id;
+        true
+    }
+
+    /// Ban user,slash user (only callable by the ban id account).
+    /// - `account_id`: User account
+    #[payable]
+    pub fn slash(&mut self, account_id: AccountId) {
+        assert_one_yocto();
+        assert_eq!(
+            self.ban_id,
+            env::predecessor_account_id(),
+            "Only the ban account can ban user."
+        );
+        let mut stake_info = self
+            .staked_balances
+            .get(&account_id)
+            .expect("No stake found for this account");
+        let stake_amount = stake_info.amount;
+        self.total_banned_amount += stake_amount;
+        self.total_banned_user += 1;
+        self.total_staked -= stake_amount;
+        self.total_user -= 1;
+        // Remove staking record
+        self.staked_balances.remove(&account_id);
+        env::log_str(&format!("Account {} slashed", account_id));
+    }
+
+    /// Query total banned amount
+    pub fn get_total_banned_amount(&self) -> u128 {
+        self.total_banned_amount
+    }
+    /// Query total banned user
+    pub fn get_total_banned_user(&self) -> u64 {
+        self.total_banned_user
+    }
 }
 
 /// Implementation of NEP-141 `ft_on_transfer` method
@@ -370,7 +424,7 @@ mod tests {
 
         // Initialize the contract
         let token_contract: AccountId = TOKEN_CONTRACT.parse().unwrap();
-        let contract = StakingContract::new(accounts(0), token_contract.clone());
+        let contract = StakingContract::new(accounts(0), token_contract.clone(), accounts(0));
 
         // Check initialization
         assert_eq!(contract.owner_id, accounts(0));
@@ -384,7 +438,8 @@ mod tests {
         testing_env!(context.build());
 
         // Initialize the contract
-        let mut contract = StakingContract::new(accounts(0), TOKEN_CONTRACT.parse().unwrap());
+        let mut contract =
+            StakingContract::new(accounts(0), TOKEN_CONTRACT.parse().unwrap(), accounts(0));
 
         // Simulate a user staking tokens via ft_on_transfer
         let sender_id = accounts(1);
@@ -404,7 +459,8 @@ mod tests {
         testing_env!(context.build());
 
         // Initialize the contract
-        let mut contract = StakingContract::new(accounts(0), TOKEN_CONTRACT.parse().unwrap());
+        let mut contract =
+            StakingContract::new(accounts(0), TOKEN_CONTRACT.parse().unwrap(), accounts(0));
 
         // Simulate a user staking tokens multiple times
         let sender_id = accounts(1);
@@ -437,7 +493,8 @@ mod tests {
         testing_env!(context.build());
 
         // Initialize the contract
-        let mut contract = StakingContract::new(accounts(0), TOKEN_CONTRACT.parse().unwrap());
+        let mut contract =
+            StakingContract::new(accounts(0), TOKEN_CONTRACT.parse().unwrap(), accounts(0));
         let sender_id = accounts(1);
         let stake_amount = U128(100_000_000_000_000_000_000);
         contract.ft_on_transfer(sender_id.clone(), stake_amount, "".to_string());
@@ -461,7 +518,8 @@ mod tests {
         testing_env!(context.build());
 
         // Initialize the contract
-        let mut contract = StakingContract::new(accounts(0), TOKEN_CONTRACT.parse().unwrap());
+        let mut contract =
+            StakingContract::new(accounts(0), TOKEN_CONTRACT.parse().unwrap(), accounts(0));
 
         // Simulate a user staking tokens
         let sender_id = accounts(1);
@@ -481,6 +539,33 @@ mod tests {
         // Check that the user's staking record is removed
         stake_info = contract.get_stake_info(sender_id);
         assert!(stake_info.is_none());
+        assert_eq!(contract.get_total_stake(), 0);
+        assert_eq!(contract.get_total_user(), 0);
+    }
+
+    #[test]
+    fn test_ban_and_unban() {
+        // Set up the testing environment
+        let initial_timestamp = 0;
+        let context = get_context(TOKEN_CONTRACT.parse().unwrap(), 0, initial_timestamp);
+        testing_env!(context.build());
+
+        // Initialize the contract
+        let mut contract =
+            StakingContract::new(accounts(0), TOKEN_CONTRACT.parse().unwrap(), accounts(0));
+
+        // Simulate a user staking tokens
+        let sender_id = accounts(1);
+        let stake_amount = U128(100_000_000_000_000_000_000);
+        contract.ft_on_transfer(sender_id.clone(), stake_amount, "".to_string());
+
+        let context = get_context(accounts(0), 1, initial_timestamp);
+        testing_env!(context.build());
+        contract.slash(sender_id.clone());
+
+        assert_eq!(contract.get_stake_info(sender_id.clone()).is_none(), true);
+        assert_eq!(contract.get_total_banned_amount(), stake_amount.0);
+        assert_eq!(contract.get_total_banned_user(), 1);
         assert_eq!(contract.get_total_stake(), 0);
         assert_eq!(contract.get_total_user(), 0);
     }
